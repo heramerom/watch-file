@@ -12,7 +12,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 type Commands []string
@@ -30,6 +32,8 @@ var commands Commands
 var pattern string
 var watchDirectory string
 var verbose bool
+var watchFile string
+var frequency int
 
 func main() {
 
@@ -40,6 +44,9 @@ func main() {
 	flag.StringVar(&watchDirectory, "dir", "./", "directory to watch")
 	flag.StringVar(&watchDirectory, "d", "./", "directory to watch")
 	flag.BoolVar(&verbose, "v", false, "verbose")
+	flag.StringVar(&watchFile, "file", "", "file to watch")
+	flag.StringVar(&watchFile, "f", "", "file to watch")
+	flag.IntVar(&frequency, "freq", 1, "frequency to exec commands")
 
 	flag.Parse()
 
@@ -66,7 +73,11 @@ func main() {
 
 	go beginWatcher(watcher, match)
 
-	addWatchDirectory(watchDirectory, watcher)
+	if watchFile != "" {
+		addWatchFile(watchFile, watcher)
+	} else {
+		addWatchDirectory(watchDirectory, watcher)
+	}
 
 	waitForSignalNotify()
 	debug("goodbye")
@@ -74,6 +85,7 @@ func main() {
 
 func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob) {
 	var preCancelFunc *context.CancelFunc
+	var lock sync.Mutex
 	for {
 		select {
 		case event := <-watcher.Events:
@@ -84,15 +96,17 @@ func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob) {
 				continue
 			}
 			debug("match file:", event.Name)
-
+			lock.Lock()
 			ctx, cancel := context.WithCancel(context.Background())
 			go func(fn *context.CancelFunc) {
 				defer cancel()
 				HandleChangedFile(event, fn, ctx)
 			}(preCancelFunc)
 			preCancelFunc = &cancel
+			<-time.After(time.Second * time.Duration(frequency))
+			lock.Unlock()
 		case err := <-watcher.Errors:
-			println("error:", err)
+			fmt.Println("watch error:", err)
 		}
 	}
 }
@@ -106,12 +120,19 @@ func addWatchDirectory(dir string, watcher *fsnotify.Watcher) {
 			debug("watch directory:", path)
 			err = watcher.Add(path)
 			if err != nil {
-				println(err)
+				fmt.Println(err.Error())
 				os.Exit(1)
 			}
 		}
 		return nil
 	})
+}
+
+func addWatchFile(f string, watcher *fsnotify.Watcher) {
+	if err := watcher.Add(f); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 }
 
 func isHiddenFile(path string) bool {
