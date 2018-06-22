@@ -28,61 +28,6 @@ func (c *Commands) Set(value string) error {
 	return nil
 }
 
-var commands Commands
-var pattern string
-var watchDirectory string
-var verbose bool
-var watchFile string
-var frequency int
-
-func main() {
-
-	flag.Var(&commands, "cmd", "commands to run")
-	flag.Var(&commands, "c", "commands to run")
-	flag.StringVar(&pattern, "pattern", "*", "pattern to match file")
-	flag.StringVar(&pattern, "p", "*", "pattern to match file")
-	flag.StringVar(&watchDirectory, "dir", "./", "directory to watch")
-	flag.StringVar(&watchDirectory, "d", "./", "directory to watch")
-	flag.BoolVar(&verbose, "v", false, "verbose")
-	flag.StringVar(&watchFile, "file", "", "file to watch")
-	flag.StringVar(&watchFile, "f", "", "file to watch")
-	flag.IntVar(&frequency, "freq", 1, "frequency to exec commands")
-
-	flag.Parse()
-
-	debug("match pattern:", pattern)
-	debug("watch dir:", watchDirectory)
-	commands = replaceDirectoryPlaceholder(commands, watchDirectory)
-	debug("commands:")
-	for _, cmd := range commands {
-		debug("\t", cmd)
-	}
-
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		fmt.Println("can not init file watcher:", err.Error())
-		os.Exit(1)
-	}
-	defer watcher.Close()
-
-	match, err := glob.Compile(pattern)
-	if err != nil {
-		fmt.Println("can not complie pattern:", err.Error())
-		os.Exit(1)
-	}
-
-	go beginWatcher(watcher, match)
-
-	if watchFile != "" {
-		addWatchFile(watchFile, watcher)
-	} else {
-		addWatchDirectory(watchDirectory, watcher)
-	}
-
-	waitForSignalNotify()
-	debug("goodbye")
-}
-
 func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob) {
 	var preCancelFunc *context.CancelFunc
 	var lock sync.Mutex
@@ -95,20 +40,49 @@ func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob) {
 			if !match.Match(event.Name) {
 				continue
 			}
-			debug("match file:", event.Name)
+			debug("file:", event.Name, "changes")
 			lock.Lock()
 			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
 			go func(fn *context.CancelFunc) {
 				defer cancel()
+				defer close(done)
 				HandleChangedFile(event, fn, ctx)
 			}(preCancelFunc)
 			preCancelFunc = &cancel
-			<-time.After(time.Second * time.Duration(frequency))
+			select {
+			case <-time.After(time.Second * time.Duration(frequency)):
+			case <-done:
+			}
 			lock.Unlock()
 		case err := <-watcher.Errors:
 			fmt.Println("watch error:", err)
 		}
 	}
+}
+
+func addWatchFilesOrDirectories(paths []string, watcher *fsnotify.Watcher) {
+	for _, p := range paths {
+		isDir, err := isDirectory(p)
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
+		if isDir {
+			addWatchDirectory(p, watcher)
+		} else {
+			addWatchFile(p, watcher)
+		}
+	}
+}
+
+func isDirectory(path string) (is bool, err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	is = info.IsDir()
+	return
 }
 
 func addWatchDirectory(dir string, watcher *fsnotify.Watcher) {
@@ -161,14 +135,14 @@ func HandleChangedFile(event fsnotify.Event, preCancelFunc *context.CancelFunc, 
 	var err error
 	for _, cmd := range commands {
 		cmd = replacePlaceholder(cmd, event.Name)
-		debug("run command:", cmd)
-		if cmd == "{stop if error}" {
+		debug("command:", cmd)
+		if cmd == "{check}" {
 			if err != nil {
 				break
 			}
 			continue
 		}
-		if cmd == "{stop pre cmd}" {
+		if cmd == "{kill}" {
 			if preCancelFunc != nil {
 				(*preCancelFunc)()
 			}
@@ -200,18 +174,10 @@ func HandleChangedFile(event fsnotify.Event, preCancelFunc *context.CancelFunc, 
 	}
 }
 
-func replaceDirectoryPlaceholder(commands Commands, dir string) Commands {
-	r := make([]string, 0, len(commands))
-	for _, cmd := range commands {
-		r = append(r, strings.Replace(cmd, "{dir}", dir, -1))
-	}
-	return Commands(r)
-}
-
 func replacePlaceholder(cmd, name string) string {
-	cmd = strings.Replace(cmd, "{fileExt}", path.Ext(name), -1)
-	cmd = strings.Replace(cmd, "{fileName}", strings.Replace(path.Base(name), path.Ext(name), "", -1), -1)
-	cmd = strings.Replace(cmd, "{fileDir}", path.Dir(name), -1)
+	cmd = strings.Replace(cmd, "{ext}", path.Ext(name), -1)
+	cmd = strings.Replace(cmd, "{name}", strings.Replace(path.Base(name), path.Ext(name), "", -1), -1)
+	cmd = strings.Replace(cmd, "{dir}", path.Dir(name), -1)
 	cmd = strings.Replace(cmd, "{file}", name, -1)
 	return cmd
 }
@@ -220,4 +186,52 @@ func debug(msg ...interface{}) {
 	if verbose {
 		fmt.Println(msg...)
 	}
+}
+
+var commands Commands
+var pattern string
+var verbose bool
+var frequency int
+
+func main() {
+
+	flag.Var(&commands, "cmd", "commands to run")
+	flag.Var(&commands, "c", "commands to run")
+	flag.StringVar(&pattern, "pattern", "*", "pattern to filter changed file")
+	flag.StringVar(&pattern, "p", "*", "pattern to filter changed file")
+	flag.BoolVar(&verbose, "v", false, "verbose")
+	flag.IntVar(&frequency, "freq", 3, "frequency to exec commands")
+
+	flag.Parse()
+
+	args := flag.Args()
+	if len(args) == 0 {
+		args = []string{"./"}
+	}
+
+	debug("match pattern:", pattern)
+	debug("commands:")
+	for _, cmd := range commands {
+		debug("\t", cmd)
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Println("can not init file watcher:", err.Error())
+		os.Exit(1)
+	}
+	defer watcher.Close()
+
+	match, err := glob.Compile(pattern)
+	if err != nil {
+		fmt.Println("can not complie pattern:", err.Error())
+		os.Exit(1)
+	}
+
+	go beginWatcher(watcher, match)
+
+	addWatchFilesOrDirectories(args, watcher)
+
+	waitForSignalNotify()
+	debug("goodbye")
 }

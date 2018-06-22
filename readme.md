@@ -1,36 +1,53 @@
 
 ## watch-file
 
-This is tool is used to exec some commands after edit a file.
+Run commands after a file changes.
 
-Eg. if you are modify a *.c* file, and want to run it after every edit. you can use this tool like this.
+#### Usage
+
 ```
-watch-file -f='main.c' -c='gcc -o main main.c' -c='./main'
+ watch-file [FLAGS] <files or directories...>
+
+ FLAGS:
+    -c --cmd        commands to run
+    -p --pattern    pattern to filter the changed files
+```
+
+#### Samples
+
+
+```
+# if you are modify a main.c file, and want to run it after every edit. you can use this tool like this.
+watch-file -c='gcc -o main main.c' -c='./main' main.c
 ```
 
 #### Command Hooks
 
-*{stop if error}* stop if exec command error
+*{check}* check last command exec result. stop if an error occur.
 
-*{stop pre cmd}* stop pre-command, it used when you run a long wait program. like web etc.
+*{kill}* kill the running command, it used when you run a long wait program. like web etc.
 ```
-watch-file -p='**.go' -c='go build -o demo .' -c='{stop if error}' -c='{stop pre cmd}' -c='./demo' # demo is a web program
+$ # like a go web demo. has 2 steps, build and run.
+$ # use {check} to stop if the build is error. and use {kill} stop the running web.
+$ watch-file -p='**.go' -c='go build -o demo .' -c='{check}' -c='{kill}' -c='./demo'
+
+$ # another is a flask demo with out debug mode
+$ watch-file -p='**.py' -c='{kill}' -c='python app.py'
 ```
 
 #### Placeholders
 
-*{file}* the modified file
+*{file}* the changed file path
 
-*{fileName}* the modified file name without ext.
+*{name}* the changed file name without ext.
 
-*{fileExt}* the modified file ext.
+*{ext}* the modified file ext.
 
-*{fileDir}* the modified file dir path.
-
-*{dir}* the watched dir path.
+*{dir}* the modified file dir path.
 
 ```
-watch-file -p='**.scss' -c='sass {file} {fileDir}/{fileDir}.css'  # just a demo, also you can use 'sass --watch'
+$ # use like 'scss --watch' command
+$ watch-file -p='**.scss' -c='sass {file} {fileDir}/{fileDir}.css'
 ```
 
 #### Files Pattern
