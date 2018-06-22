@@ -5,7 +5,7 @@ Run commands after a file changes.
 
 #### Usage
 
-```
+```sh
  watch-file [FLAGS] <files or directories...>
 
  FLAGS:
@@ -16,7 +16,7 @@ Run commands after a file changes.
 #### Samples
 
 
-```
+```sh
 # if you are modify a main.c file, and want to run it after every edit. you can use this tool like this.
 watch-file -c='gcc -o main main.c' -c='./main' main.c
 ```
@@ -26,7 +26,7 @@ watch-file -c='gcc -o main main.c' -c='./main' main.c
 *{check}* check last command exec result. stop if an error occur.
 
 *{kill}* kill the running command, it used when you run a long wait program. like web etc.
-```
+```sh
 $ # like a go web demo. has 2 steps, build and run.
 $ # use {check} to stop if the build is error. and use {kill} stop the running web.
 $ watch-file -p='**.go' -c='go build -o demo .' -c='{check}' -c='{kill}' -c='./demo'
@@ -41,13 +41,13 @@ $ watch-file -p='**.py' -c='{kill}' -c='python app.py'
 
 *{name}* the changed file name without ext.
 
-*{ext}* the modified file ext.
+*{ext}* the changed file ext.
 
-*{dir}* the modified file dir path.
+*{dir}* the changed file dir path.
 
-```
+```sh
 $ # use like 'scss --watch' command
-$ watch-file -p='**.scss' -c='sass {file} {fileDir}/{fileDir}.css'
+$ watch-file -p='**.scss' -c='sass {file} {dir}/{name}.css'
 ```
 
 #### Files Pattern
