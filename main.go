@@ -12,7 +12,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -28,33 +27,34 @@ func (c *Commands) Set(value string) error {
 	return nil
 }
 
-func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob) {
+func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob, except glob.Glob) {
 	var preCancelFunc *context.CancelFunc
-	var lock sync.Mutex
+	var running = false
 	for {
 		select {
 		case event := <-watcher.Events:
-			if event.Op != fsnotify.Create && event.Op != fsnotify.Write && event.Op != fsnotify.Remove {
-				continue
-			}
 			if !match.Match(event.Name) {
 				continue
 			}
+			if except.Match(event.Name) {
+				continue
+			}
 			debug("file:", event.Name, "changes")
-			lock.Lock()
+
+			if running {
+				continue
+			}
+			running = true
+			<-time.After(time.Second * time.Duration(delay))
+			running = false
+
 			ctx, cancel := context.WithCancel(context.Background())
-			done := make(chan struct{})
 			go func(fn *context.CancelFunc) {
 				defer cancel()
-				defer close(done)
 				HandleChangedFile(event, fn, ctx)
 			}(preCancelFunc)
 			preCancelFunc = &cancel
-			select {
-			case <-time.After(time.Second * time.Duration(frequency)):
-			case <-done:
-			}
-			lock.Unlock()
+
 		case err := <-watcher.Errors:
 			fmt.Println("watch error:", err)
 		}
@@ -191,7 +191,8 @@ func debug(msg ...interface{}) {
 var commands Commands
 var pattern string
 var verbose bool
-var frequency int
+var delay int
+var except string
 
 func main() {
 
@@ -199,8 +200,10 @@ func main() {
 	flag.Var(&commands, "c", "commands to run")
 	flag.StringVar(&pattern, "pattern", "*", "pattern to filter changed file")
 	flag.StringVar(&pattern, "p", "*", "pattern to filter changed file")
+	flag.StringVar(&except, "except", "", "except files")
+	flag.StringVar(&except, "e", "", "except files")
 	flag.BoolVar(&verbose, "v", false, "verbose")
-	flag.IntVar(&frequency, "freq", 3, "frequency to exec commands")
+	flag.IntVar(&delay, "delay", 1, "delay to exec commands")
 
 	flag.Parse()
 
@@ -228,7 +231,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	go beginWatcher(watcher, match)
+	var exceptMatch glob.Glob
+	if except != "" {
+		exceptMatch, err = glob.Compile(except)
+		if err != nil {
+			fmt.Println("can not complie except")
+			os.Exit(1)
+		}
+	}
+
+	go beginWatcher(watcher, match, exceptMatch)
 
 	addWatchFilesOrDirectories(args, watcher)
 
