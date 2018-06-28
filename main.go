@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -29,27 +30,32 @@ func (c *Commands) Set(value string) error {
 
 func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob, except glob.Glob) {
 	var preCancelFunc *context.CancelFunc
-	var running = false
+	var lock sync.Mutex
+	var running bool
 	for {
 		select {
 		case event := <-watcher.Events:
-			if !match.Match(event.Name) {
-				continue
+			if match != nil {
+				if !match.Match(event.Name) {
+					continue
+				}
 			}
-			if except.Match(event.Name) {
-				continue
+			if except != nil {
+				if except.Match(event.Name) {
+					continue
+				}
 			}
-			debug("file:", event.Name, "changes")
-
+			lock.Lock()
 			if running {
-				continue
+				lock.Unlock()
+				break
 			}
 			running = true
-			<-time.After(time.Second * time.Duration(delay))
-			running = false
-
+			lock.Unlock()
 			ctx, cancel := context.WithCancel(context.Background())
 			go func(fn *context.CancelFunc) {
+				<-time.After(time.Second * time.Duration(delay))
+				running = false
 				defer cancel()
 				HandleChangedFile(event, fn, ctx)
 			}(preCancelFunc)
