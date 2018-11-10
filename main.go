@@ -17,21 +17,64 @@ import (
 	"time"
 )
 
-type Commands []string
+type runningFlag struct {
+	running bool
+	sync.Mutex
+}
+
+func (r *runningFlag) isRunning() (running bool) {
+	r.Lock()
+	running = r.running
+	r.Unlock()
+	return
+}
+
+func (r *runningFlag) setRunning(running bool) {
+	r.Lock()
+	r.running = running
+	r.Unlock()
+	return
+}
+
+type Command string
+
+func (c *Command) isCheck() bool {
+	return (*c) == "{check}"
+}
+
+func (c *Command) isKill() bool {
+	return (*c) == "{kill}"
+}
+
+func (c *Command) build(name string) []string {
+	cmd := string(*c)
+	cmd = strings.Replace(cmd, "{ext}", path.Ext(name), -1)
+	cmd = strings.Replace(cmd, "{name}", strings.Replace(path.Base(name), path.Ext(name), "", -1), -1)
+	cmd = strings.Replace(cmd, "{dir}", path.Dir(name), -1)
+	cmd = strings.Replace(cmd, "{file}", name, -1)
+	return strings.Split(cmd, " ")
+}
+
+func (c *Command) exec(filename string, ctx context.Context) error {
+	commands := c.build(filename)
+	cmd := exec.CommandContext(ctx, commands[0], commands[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stdout
+	return cmd.Run()
+}
+
+type Commands []Command
 
 func (c *Commands) String() string {
 	return ""
 }
 
 func (c *Commands) Set(value string) error {
-	*c = append(*c, value)
+	*c = append(*c, Command(value))
 	return nil
 }
 
-func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob, except glob.Glob) {
-	var preCancelFunc *context.CancelFunc
-	var lock sync.Mutex
-	var running bool
+func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob, except glob.Glob, fileChan chan string) {
 	for {
 		select {
 		case event := <-watcher.Events:
@@ -45,26 +88,35 @@ func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob, except glob.Glob) 
 					continue
 				}
 			}
-			lock.Lock()
-			if running {
-				lock.Unlock()
-				break
-			}
-			running = true
-			lock.Unlock()
-			ctx, cancel := context.WithCancel(context.Background())
-			go func(fn *context.CancelFunc) {
-				<-time.After(time.Second * time.Duration(delay))
-				running = false
-				defer cancel()
-				HandleChangedFile(event, fn, ctx)
-			}(preCancelFunc)
-			preCancelFunc = &cancel
-
+			fileChan <- event.Name
 		case err := <-watcher.Errors:
 			fmt.Println("watch error:", err)
 		}
 	}
+}
+
+func watchFileChanged(fileChan chan string) {
+	var preCancelFunc *context.CancelFunc
+	var running runningFlag
+	for {
+		filename := <-fileChan
+		if canExec(running, delay) {
+			continue
+		}
+		go func(fn *context.CancelFunc) {
+			preCancelFunc = HandleChangedFile(filename, fn)
+		}(preCancelFunc)
+	}
+}
+
+func canExec(running runningFlag, delay int) bool {
+	if running.isRunning() {
+		return false
+	}
+	running.setRunning(true)
+	<-time.After(time.Second * time.Duration(delay))
+	running.setRunning(false)
+	return true
 }
 
 func addWatchFilesOrDirectories(paths []string, watcher *fsnotify.Watcher) {
@@ -132,7 +184,7 @@ func waitForSignalNotify() {
 	<-ch
 }
 
-func HandleChangedFile(event fsnotify.Event, preCancelFunc *context.CancelFunc, cancelCtx context.Context) {
+func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc) (killFunc *context.CancelFunc) {
 	defer func() {
 		if x := recover(); x != nil {
 			fmt.Println("panic:", x)
@@ -140,15 +192,13 @@ func HandleChangedFile(event fsnotify.Event, preCancelFunc *context.CancelFunc, 
 	}()
 	var err error
 	for _, cmd := range commands {
-		cmd = replacePlaceholder(cmd, event.Name)
-		debug("command:", cmd)
-		if cmd == "{check}" {
+		if cmd.isCheck() {
 			if err != nil {
 				break
 			}
 			continue
 		}
-		if cmd == "{kill}" {
+		if cmd.isKill() {
 			if preCancelFunc != nil {
 				(*preCancelFunc)()
 			}
@@ -156,36 +206,22 @@ func HandleChangedFile(event fsnotify.Event, preCancelFunc *context.CancelFunc, 
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
+		killFunc = &cancel
 		done := make(chan struct{})
 		go func() {
 			defer cancel()
 			defer close(done)
-			commands := strings.Split(cmd, " ")
-			cmd := exec.CommandContext(ctx, commands[0], commands[1:]...)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stdout
-			err = cmd.Run()
+			err = cmd.exec(filename, ctx)
 			if err != nil {
 				fmt.Println("run command error:", err.Error())
 			}
 		}()
-
 		select {
-		case <-cancelCtx.Done():
-			cancel()
-			return
 		case <-done:
 			continue
 		}
 	}
-}
-
-func replacePlaceholder(cmd, name string) string {
-	cmd = strings.Replace(cmd, "{ext}", path.Ext(name), -1)
-	cmd = strings.Replace(cmd, "{name}", strings.Replace(path.Base(name), path.Ext(name), "", -1), -1)
-	cmd = strings.Replace(cmd, "{dir}", path.Dir(name), -1)
-	cmd = strings.Replace(cmd, "{file}", name, -1)
-	return cmd
+	return
 }
 
 func debug(msg ...interface{}) {
@@ -199,6 +235,7 @@ var pattern string
 var verbose bool
 var delay int
 var except string
+var execOnInit bool
 
 func main() {
 
@@ -210,6 +247,7 @@ func main() {
 	flag.StringVar(&except, "e", "", "except files")
 	flag.BoolVar(&verbose, "v", false, "verbose")
 	flag.IntVar(&delay, "delay", 1, "delay to exec commands")
+	flag.BoolVar(&execOnInit, "init", true, "exec commands when init")
 
 	flag.Parse()
 
@@ -233,7 +271,7 @@ func main() {
 
 	match, err := glob.Compile(pattern)
 	if err != nil {
-		fmt.Println("can not complie pattern:", err.Error())
+		fmt.Println("can not compile pattern:", err.Error())
 		os.Exit(1)
 	}
 
@@ -241,12 +279,19 @@ func main() {
 	if except != "" {
 		exceptMatch, err = glob.Compile(except)
 		if err != nil {
-			fmt.Println("can not complie except")
+			fmt.Println("can not compile except")
 			os.Exit(1)
 		}
 	}
 
-	go beginWatcher(watcher, match, exceptMatch)
+	fileChan := make(chan string, 1)
+	defer close(fileChan)
+	go beginWatcher(watcher, match, exceptMatch, fileChan)
+	go watchFileChanged(fileChan)
+
+	if execOnInit {
+		fileChan <- ""
+	}
 
 	addWatchFilesOrDirectories(args, watcher)
 
