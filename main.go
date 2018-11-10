@@ -46,6 +46,10 @@ func (c *Command) isKill() bool {
 	return (*c) == "{kill}"
 }
 
+func (c *Command) isWait() bool {
+	return (*c) == "{wait}"
+}
+
 func (c *Command) build(name string) []string {
 	cmd := string(*c)
 	cmd = strings.Replace(cmd, "{ext}", path.Ext(name), -1)
@@ -100,23 +104,19 @@ func watchFileChanged(fileChan chan string) {
 	var running runningFlag
 	for {
 		filename := <-fileChan
-		if canExec(running, delay) {
+		if running.isRunning() {
 			continue
 		}
+		running.setRunning(true)
+		cancelCtx, cancel := context.WithCancel(context.Background())
 		go func(fn *context.CancelFunc) {
-			preCancelFunc = HandleChangedFile(filename, fn)
+			<-time.After(time.Second * time.Duration(delay))
+			running.setRunning(false)
+			defer cancel()
+			HandleChangedFile(filename, fn, cancelCtx)
 		}(preCancelFunc)
+		preCancelFunc = &cancel
 	}
-}
-
-func canExec(running runningFlag, delay int) bool {
-	if running.isRunning() {
-		return false
-	}
-	running.setRunning(true)
-	<-time.After(time.Second * time.Duration(delay))
-	running.setRunning(false)
-	return true
 }
 
 func addWatchFilesOrDirectories(paths []string, watcher *fsnotify.Watcher) {
@@ -177,14 +177,14 @@ func isHiddenFile(path string) bool {
 	return false
 }
 
-func waitForSignalNotify() {
+func waitingForSignalNotify() {
 	ch := make(chan os.Signal)
 	defer close(ch)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL)
 	<-ch
 }
 
-func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc) (killFunc *context.CancelFunc) {
+func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc, cancelCtx context.Context) {
 	defer func() {
 		if x := recover(); x != nil {
 			fmt.Println("panic:", x)
@@ -205,8 +205,12 @@ func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc) (kill
 			continue
 		}
 
+		if cmd.isWait() {
+			time.Sleep(time.Second * time.Duration(waitSeconds))
+			continue
+		}
+
 		ctx, cancel := context.WithCancel(context.Background())
-		killFunc = &cancel
 		done := make(chan struct{})
 		go func() {
 			defer cancel()
@@ -217,6 +221,9 @@ func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc) (kill
 			}
 		}()
 		select {
+		case <-cancelCtx.Done():
+			cancel()
+			break
 		case <-done:
 			continue
 		}
@@ -236,6 +243,7 @@ var verbose bool
 var delay int
 var except string
 var execOnInit bool
+var waitSeconds int
 
 func main() {
 
@@ -248,6 +256,7 @@ func main() {
 	flag.BoolVar(&verbose, "v", false, "verbose")
 	flag.IntVar(&delay, "delay", 1, "delay to exec commands")
 	flag.BoolVar(&execOnInit, "init", true, "exec commands when init")
+	flag.IntVar(&waitSeconds, "wait", 1, "wait some seconds after kill pre-command")
 
 	flag.Parse()
 
@@ -295,6 +304,6 @@ func main() {
 
 	addWatchFilesOrDirectories(args, watcher)
 
-	waitForSignalNotify()
+	waitingForSignalNotify()
 	debug("goodbye")
 }
