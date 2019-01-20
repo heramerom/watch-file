@@ -59,7 +59,19 @@ func (c *Command) build(name string) []string {
 	return strings.Split(cmd, " ")
 }
 
+func (c *Command) hasHook() bool {
+	for _, hook := range []string{"{ext}", "{name}", "{dir}", "{file}"} {
+		if strings.Contains(string(*c), hook) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Command) exec(filename string, ctx context.Context) error {
+	if filename == "" && c.hasHook() {
+		return nil
+	}
 	commands := c.build(filename)
 	cmd := exec.CommandContext(ctx, commands[0], commands[1:]...)
 	cmd.Stdout = os.Stdout
@@ -87,8 +99,10 @@ type FileRepo struct {
 
 func NewFileRepo(match, except glob.Glob) *FileRepo {
 	return &FileRepo{
-		Paths: make(map[string]struct{}),
-		Files: make(map[string]struct{}),
+		Paths:  make(map[string]struct{}),
+		Files:  make(map[string]struct{}),
+		Match:  match,
+		Except: except,
 	}
 }
 
@@ -115,6 +129,9 @@ func beginWatcher(watcher *fsnotify.Watcher, repo *FileRepo, fileChan chan strin
 		select {
 		case event := <-watcher.Events:
 			if !repo.IsMatch(event.Name) {
+				continue
+			}
+			if event.Op == fsnotify.Chmod {
 				continue
 			}
 			fileChan <- event.Name
@@ -145,18 +162,19 @@ func watchFileChanged(fileChan chan string) {
 }
 
 func addWatchFilesOrDirectories(paths []string, repo *FileRepo, watcher *fsnotify.Watcher) {
-	for _, p := range paths {
-		isDir, err := isDirectory(p)
+	for _, pth := range paths {
+		isDir, err := isDirectory(pth)
 		if err != nil {
 			fmt.Println(err.Error())
 			os.Exit(1)
 		}
 		if isDir {
-			repo.Paths[p] = struct{}{}
-			addWatchDirectory(p, watcher)
+			repo.Paths[pth] = struct{}{}
+			addWatchDirectory(pth, watcher)
 		} else {
-			repo.Files[p] = struct{}{}
-			addWatchFile(p, watcher)
+			fmt.Println("add watch file: ", pth)
+			repo.Files[pth] = struct{}{}
+			addWatchFile(pth, watcher)
 		}
 	}
 }
@@ -166,6 +184,7 @@ func isDirectory(path string) (is bool, err error) {
 	if err != nil {
 		return
 	}
+	info.Name()
 	is = info.IsDir()
 	return
 }
@@ -187,8 +206,8 @@ func addWatchDirectory(dir string, watcher *fsnotify.Watcher) {
 	})
 }
 
-func addWatchFile(f string, watcher *fsnotify.Watcher) {
-	if err := watcher.Add(f); err != nil {
+func addWatchFile(pth string, watcher *fsnotify.Watcher) {
+	if err := watcher.Add(filepath.Dir(pth)); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -322,7 +341,7 @@ func main() {
 
 	repo := NewFileRepo(match, exceptMatch)
 
-	fileChan := make(chan string, 1)
+	fileChan := make(chan string, 16)
 	defer close(fileChan)
 	go beginWatcher(watcher, repo, fileChan)
 	go watchFileChanged(fileChan)
