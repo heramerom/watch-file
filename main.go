@@ -169,10 +169,10 @@ func addWatchFilesOrDirectories(paths []string, repo *FileRepo, watcher *fsnotif
 			os.Exit(1)
 		}
 		if isDir {
+			pth = filepath.Dir(filepath.Join(pth, "tmp"))
 			repo.Paths[pth] = struct{}{}
-			addWatchDirectory(pth, watcher)
+			addWatchDirectory(pth, repo, watcher)
 		} else {
-			fmt.Println("add watch file: ", pth)
 			repo.Files[pth] = struct{}{}
 			addWatchFile(pth, watcher)
 		}
@@ -189,14 +189,15 @@ func isDirectory(path string) (is bool, err error) {
 	return
 }
 
-func addWatchDirectory(dir string, watcher *fsnotify.Watcher) {
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if isHiddenFile(path) {
+func addWatchDirectory(dir string, repo *FileRepo, watcher *fsnotify.Watcher) {
+	filepath.Walk(dir, func(pth string, info os.FileInfo, err error) error {
+		if isHiddenFile(pth) {
 			return nil
 		}
 		if info.IsDir() {
-			debug("watch directory:", path)
-			err = watcher.Add(path)
+			debug("watch directory:", pth)
+			repo.Paths[pth] = struct{}{}
+			err = watcher.Add(pth)
 			if err != nil {
 				fmt.Println(err.Error())
 				os.Exit(1)
@@ -291,8 +292,7 @@ var except string
 var execOnInit bool
 var waitSeconds int
 
-func main() {
-
+func init() {
 	flag.Var(&commands, "cmd", "commands to run")
 	flag.Var(&commands, "c", "commands to run")
 	flag.StringVar(&pattern, "pattern", "*", "pattern to filter changed file")
@@ -305,6 +305,9 @@ func main() {
 	flag.IntVar(&waitSeconds, "wait", 1, "wait some seconds after kill pre-command")
 
 	flag.Parse()
+}
+
+func main() {
 
 	args := flag.Args()
 	if len(args) == 0 {
