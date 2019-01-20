@@ -78,19 +78,44 @@ func (c *Commands) Set(value string) error {
 	return nil
 }
 
-func beginWatcher(watcher *fsnotify.Watcher, match glob.Glob, except glob.Glob, fileChan chan string) {
+type FileRepo struct {
+	Paths  map[string]struct{}
+	Files  map[string]struct{}
+	Match  glob.Glob
+	Except glob.Glob
+}
+
+func NewFileRepo(match, except glob.Glob) *FileRepo {
+	return &FileRepo{
+		Paths: make(map[string]struct{}),
+		Files: make(map[string]struct{}),
+	}
+}
+
+func (fr *FileRepo) IsMatch(pth string) bool {
+	_, ok := fr.Files[pth]
+	if ok {
+		return true
+	}
+	_, ok = fr.Paths[filepath.Dir(pth)]
+	if ok {
+		if fr.Match != nil && !fr.Match.Match(pth) {
+			return false
+		}
+		if fr.Except != nil && fr.Except.Match(pth) {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func beginWatcher(watcher *fsnotify.Watcher, repo *FileRepo, fileChan chan string) {
 	for {
 		select {
 		case event := <-watcher.Events:
-			if match != nil {
-				if !match.Match(event.Name) {
-					continue
-				}
-			}
-			if except != nil {
-				if except.Match(event.Name) {
-					continue
-				}
+			if !repo.IsMatch(event.Name) {
+				continue
 			}
 			fileChan <- event.Name
 		case err := <-watcher.Errors:
@@ -119,7 +144,7 @@ func watchFileChanged(fileChan chan string) {
 	}
 }
 
-func addWatchFilesOrDirectories(paths []string, watcher *fsnotify.Watcher) {
+func addWatchFilesOrDirectories(paths []string, repo *FileRepo, watcher *fsnotify.Watcher) {
 	for _, p := range paths {
 		isDir, err := isDirectory(p)
 		if err != nil {
@@ -127,8 +152,10 @@ func addWatchFilesOrDirectories(paths []string, watcher *fsnotify.Watcher) {
 			os.Exit(1)
 		}
 		if isDir {
+			repo.Paths[p] = struct{}{}
 			addWatchDirectory(p, watcher)
 		} else {
+			repo.Files[p] = struct{}{}
 			addWatchFile(p, watcher)
 		}
 	}
@@ -293,16 +320,18 @@ func main() {
 		}
 	}
 
+	repo := NewFileRepo(match, exceptMatch)
+
 	fileChan := make(chan string, 1)
 	defer close(fileChan)
-	go beginWatcher(watcher, match, exceptMatch, fileChan)
+	go beginWatcher(watcher, repo, fileChan)
 	go watchFileChanged(fileChan)
 
 	if execOnInit {
 		fileChan <- ""
 	}
 
-	addWatchFilesOrDirectories(args, watcher)
+	addWatchFilesOrDirectories(args, repo, watcher)
 
 	waitingForSignalNotify()
 	debug("goodbye")
