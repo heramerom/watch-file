@@ -155,7 +155,10 @@ func watchFileChanged(fileChan chan string) {
 			<-time.After(time.Second * time.Duration(delay))
 			running.setRunning(false)
 			defer cancel()
-			HandleChangedFile(filename, fn, cancelCtx)
+			pf := HandleChangedFile(filename, fn, cancelCtx)
+			if pf != nil {
+				preCancelFunc = pf
+			}
 		}(preCancelFunc)
 		preCancelFunc = &cancel
 	}
@@ -231,7 +234,8 @@ func waitingForSignalNotify() {
 	<-ch
 }
 
-func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc, cancelCtx context.Context) {
+func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc,
+	cancelCtx context.Context) (cancelFunc *context.CancelFunc) {
 	defer func() {
 		if x := recover(); x != nil {
 			fmt.Println("panic:", x)
@@ -241,6 +245,7 @@ func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc, cance
 	for _, cmd := range commands {
 		if cmd.isCheck() {
 			if err != nil {
+				cancelFunc = preCancelFunc
 				break
 			}
 			continue
