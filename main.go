@@ -73,6 +73,9 @@ func (c *Command) exec(filename string, ctx context.Context) error {
 		return nil
 	}
 	commands := c.build(filename)
+	if verbose2 {
+		fmt.Println("run command:", strings.Join(commands, " "))
+	}
 	cmd := exec.CommandContext(ctx, commands[0], commands[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stdout
@@ -193,7 +196,7 @@ func isDirectory(path string) (is bool, err error) {
 }
 
 func addWatchDirectory(dir string, repo *FileRepo, watcher *fsnotify.Watcher) {
-	filepath.Walk(dir, func(pth string, info os.FileInfo, err error) error {
+	err := filepath.Walk(dir, func(pth string, info os.FileInfo, err error) error {
 		if isHiddenFile(pth) {
 			return nil
 		}
@@ -208,6 +211,9 @@ func addWatchDirectory(dir string, repo *FileRepo, watcher *fsnotify.Watcher) {
 		}
 		return nil
 	})
+	if err != nil {
+		fmt.Println("error to add watch directory:", err)
+	}
 }
 
 func addWatchFile(pth string, watcher *fsnotify.Watcher) {
@@ -284,18 +290,21 @@ func HandleChangedFile(filename string, preCancelFunc *context.CancelFunc,
 }
 
 func debug(msg ...interface{}) {
-	if verbose {
+	if verbose || verbose2 {
 		fmt.Println(msg...)
 	}
 }
 
-var commands Commands
-var pattern string
-var verbose bool
-var delay int
-var except string
-var execOnInit bool
-var waitSeconds int
+var (
+	commands    Commands
+	pattern     string
+	verbose     bool
+	verbose2    bool
+	delay       int
+	except      string
+	execOnInit  bool
+	waitSeconds int
+)
 
 func init() {
 	flag.Var(&commands, "cmd", "commands to run")
@@ -305,6 +314,7 @@ func init() {
 	flag.StringVar(&except, "except", "", "except files")
 	flag.StringVar(&except, "e", "", "except files")
 	flag.BoolVar(&verbose, "v", false, "verbose")
+	flag.BoolVar(&verbose2, "vv", false, "verbose")
 	flag.IntVar(&delay, "delay", 1, "delay to exec commands")
 	flag.BoolVar(&execOnInit, "init", true, "exec commands when init")
 	flag.IntVar(&waitSeconds, "wait", 1, "wait some seconds after kill pre-command")
